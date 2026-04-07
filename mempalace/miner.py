@@ -252,29 +252,29 @@ def process_file(
     rooms: list,
     agent: str,
     dry_run: bool,
-) -> int:
-    """Read, chunk, route, and file one file. Returns drawer count."""
+) -> tuple:
+    """Read, chunk, route, and file one file. Returns (drawer_count, room)."""
 
     # Skip if already filed
     source_file = str(filepath)
     if not dry_run and file_already_mined(collection, source_file):
-        return 0
+        return 0, None
 
     try:
         content = filepath.read_text(encoding="utf-8", errors="replace")
     except Exception:
-        return 0
+        return 0, None
 
     content = content.strip()
     if len(content) < MIN_CHUNK_SIZE:
-        return 0
+        return 0, None
 
     room = detect_room(filepath, content, rooms, project_path)
     chunks = chunk_text(content, source_file)
 
     if dry_run:
         print(f"    [DRY RUN] {filepath.name} → room:{room} ({len(chunks)} drawers)")
-        return len(chunks)
+        return len(chunks), room
 
     drawers_added = 0
     for chunk in chunks:
@@ -290,7 +290,7 @@ def process_file(
         if added:
             drawers_added += 1
 
-    return drawers_added
+    return drawers_added, room
 
 
 # =============================================================================
@@ -448,7 +448,7 @@ def mine(
     room_counts = defaultdict(int)
 
     for i, filepath in enumerate(files, 1):
-        drawers = process_file(
+        drawers, room = process_file(
             filepath=filepath,
             project_path=project_path,
             collection=collection,
@@ -461,10 +461,10 @@ def mine(
             files_skipped += 1
         else:
             total_drawers += drawers
-            room = detect_room(filepath, "", rooms, project_path)
-            room_counts[room] += 1
+            if room:
+                room_counts[room] += 1
             if not dry_run:
-                print(f"  ✓ [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers}")
+                print(f"  ✓ [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers} → {room or 'general'}")
 
     print(f"\n{'=' * 55}")
     if client is not None:
