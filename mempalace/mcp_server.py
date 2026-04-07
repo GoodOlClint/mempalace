@@ -4,13 +4,18 @@ MemPalace MCP Server — read/write palace access for Claude Code
 ================================================================
 Install: claude mcp add mempalace -- python /path/to/mcp_server.py
 
+Transport modes:
+  stdio  — default, for Claude Code MCP integration
+  tcp    — for remote mining clients (set MEMPALACE_TCP_PORT or --tcp-port)
+
 Tools (read):
-  mempalace_status          — total drawers, wing/room breakdown
-  mempalace_list_wings      — all wings with drawer counts
-  mempalace_list_rooms      — rooms within a wing
-  mempalace_get_taxonomy    — full wing → room → count tree
-  mempalace_search          — semantic search, optional wing/room filter
-  mempalace_check_duplicate — check if content already exists before filing
+  mempalace_status              — total drawers, wing/room breakdown
+  mempalace_list_wings          — all wings with drawer counts
+  mempalace_list_rooms          — rooms within a wing
+  mempalace_get_taxonomy        — full wing → room → count tree
+  mempalace_search              — semantic search, optional wing/room filter
+  mempalace_check_duplicate     — check if content already exists before filing
+  mempalace_file_already_mined  — check if a source file has been ingested
 
 Tools (write):
   mempalace_add_drawer      — file verbatim content into a wing/room
@@ -24,6 +29,7 @@ import json
 import socket
 import logging
 import hashlib
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -320,6 +326,18 @@ def tool_update_drawer(drawer_id: str, new_content: str):
         return {"success": True, "drawer_id": drawer_id, "edited_at": edited_at}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def tool_file_already_mined(source_file: str):
+    """Check if a source file has already been mined into the palace."""
+    col = _get_collection()
+    if not col:
+        return {"mined": False, "palace_exists": False}
+    try:
+        results = col.get(where={"source_file": source_file}, limit=1)
+        return {"mined": len(results.get("ids", [])) > 0, "source_file": source_file}
+    except Exception:
+        return {"mined": False, "source_file": source_file}
 
 
 # ==================== KNOWLEDGE GRAPH ====================
@@ -676,6 +694,20 @@ TOOLS = {
         },
         "handler": tool_update_drawer,
     },
+    "mempalace_file_already_mined": {
+        "description": "Check if a source file has already been mined into the palace. Used by remote miners to skip already-ingested files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_file": {
+                    "type": "string",
+                    "description": "Full path of the source file to check",
+                },
+            },
+            "required": ["source_file"],
+        },
+        "handler": tool_file_already_mined,
+    },
     "mempalace_diary_write": {
         "description": "Write to your personal agent diary in AAAK format. Your observations, thoughts, what you worked on, what matters. Each agent has their own diary with full history. Write in AAAK for compression — e.g. 'SESSION:2026-04-04|built.palace.graph+diary.tools|ALC.req:agent.diaries.in.aaak|★★★'. Use entity codes from the AAAK spec.",
         "input_schema": {
@@ -827,8 +859,9 @@ def handle_request(request):
 
 def _forward_to_remote(request: dict, host: str, port: int, timeout: float = 30.0) -> dict:
     """Forward a JSON-RPC request to a remote MCP server over TCP."""
+    import socket as _socket
     payload = json.dumps(request) + "\n"
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
         sock.connect((host, port))
@@ -846,16 +879,14 @@ def _forward_to_remote(request: dict, host: str, port: int, timeout: float = 30.
         sock.close()
 
 
-def main():
-    """Entry point — stdio MCP server, optionally proxying to a remote palace."""
-    remote = os.environ.get("MEMPALACE_REMOTE")
-
+def main_stdio(remote=None):
+    """Run the MCP server over stdio, optionally proxying to a remote palace."""
     if remote:
-        host, port_str = remote.rsplit(":", 1)
-        port = int(port_str)
-        logger.info(f"MemPalace MCP Server starting (proxy → {remote})...")
+        r_host, r_port_str = remote.rsplit(":", 1)
+        r_port = int(r_port_str)
+        logger.info(f"MemPalace MCP Server (stdio, proxy → {remote})...")
     else:
-        logger.info("MemPalace MCP Server starting (local)...")
+        logger.info("MemPalace MCP Server (stdio, local)...")
 
     while True:
         try:
@@ -869,12 +900,11 @@ def main():
 
             if remote:
                 method = request.get("method", "")
-                # Handle protocol handshake locally, forward tool calls to remote
                 if method in ("initialize", "notifications/initialized", "tools/list"):
                     response = handle_request(request)
                 else:
                     try:
-                        response = _forward_to_remote(request, host, port)
+                        response = _forward_to_remote(request, r_host, r_port)
                     except Exception as e:
                         logger.error(f"Remote proxy error: {e}")
                         response = {
@@ -892,6 +922,15 @@ def main():
             break
         except Exception as e:
             logger.error(f"Server error: {e}")
+
+
+def main():
+    """Entry point — stdio MCP server, optionally proxying to a remote palace.
+
+    TCP server mode is handled by the 'mempalace serve' CLI command.
+    """
+    remote = os.environ.get("MEMPALACE_REMOTE") or _config.remote
+    main_stdio(remote=remote)
 
 
 if __name__ == "__main__":

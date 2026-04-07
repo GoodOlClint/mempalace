@@ -43,11 +43,15 @@ def cmd_init(args):
     project_path = Path(args.dir).expanduser().resolve()
     wing_name = args.wing or project_path.name.lower().replace(" ", "_").replace("-", "_")
 
+    remote = getattr(args, "remote", None)
+
     if args.blank:
         # Blank init — skip all detection, create minimal config
         rooms = [{"name": "general", "description": "All project files"}]
         save_config(str(project_path), wing_name, rooms)
-        MempalaceConfig().init()
+        MempalaceConfig().init(remote=remote)
+        if remote:
+            print(f"  Remote palace: {remote}")
         return
 
     from .entity_detector import scan_for_detection, detect_entities, confirm_entities
@@ -73,36 +77,80 @@ def cmd_init(args):
 
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False), wing_override=wing_name)
-    MempalaceConfig().init()
+    MempalaceConfig().init(remote=remote)
+    if remote:
+        print(f"  Remote palace: {remote}")
 
 
 def cmd_mine(args):
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    remote = getattr(args, "remote", None) or MempalaceConfig().remote
 
-    if args.mode == "convos":
-        from .convo_miner import mine_convos
+    if remote:
+        from .remote_client import RemotePalaceClient
 
-        mine_convos(
-            convo_dir=args.dir,
-            palace_path=palace_path,
-            wing=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            extract_mode=args.extract,
-        )
+        client = RemotePalaceClient(remote)
+        print(f"\n  Connecting to remote palace at {remote}...")
+        try:
+            status = client.verify()
+            print(f"  Connected. Remote palace has {status.get('total_drawers', '?')} drawers.\n")
+        except Exception as e:
+            print(f"  ERROR: Could not connect to {remote}: {e}")
+            return
+
+        collection = client.collection()
+
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=None,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+                collection=collection,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=None,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                collection=collection,
+            )
     else:
-        from .miner import mine
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
 
-        mine(
-            project_dir=args.dir,
-            palace_path=palace_path,
-            wing_override=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            respect_gitignore=not args.no_gitignore,
-        )
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=palace_path,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=palace_path,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                respect_gitignore=not args.no_gitignore,
+            )
 
 
 def cmd_search(args):
@@ -373,6 +421,10 @@ def main():
         "--wing", default=None,
         help="Override wing name (default: directory name)",
     )
+    p_init.add_argument(
+        "--remote", default=None,
+        help="Remote MCP server address (host:port) — store in config for all subsequent commands",
+    )
 
     # mine
     p_mine = sub.add_parser("mine", help="Mine files into the palace")
@@ -403,6 +455,11 @@ def main():
         "--no-gitignore",
         action="store_true",
         help="Don't respect .gitignore files when scanning (index everything)",
+    )
+    p_mine.add_argument(
+        "--remote",
+        default=None,
+        help="Remote MCP server address (host:port) — mine locally, ingest remotely",
     )
 
     # search
