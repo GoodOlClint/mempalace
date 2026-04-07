@@ -106,6 +106,23 @@ class MempalaceConfig:
         return self._file_config.get("remote", None)
 
     @property
+    def local_embeddings(self):
+        """Whether to compute embeddings locally before sending to remote server.
+        Dramatically faster on Apple Silicon vs VM CPU. Default False."""
+        env_val = os.environ.get("MEMPALACE_LOCAL_EMBEDDINGS")
+        if env_val:
+            return env_val.lower() in ("1", "true", "yes")
+        return self._file_config.get("local_embeddings", False)
+
+    @property
+    def embedding_batch_size(self):
+        """Number of drawers to batch per remote write. Default 50."""
+        env_val = os.environ.get("MEMPALACE_BATCH_SIZE")
+        if env_val:
+            return int(env_val)
+        return self._file_config.get("embedding_batch_size", 50)
+
+    @property
     def collection_name(self):
         """ChromaDB collection name."""
         return self._file_config.get("collection_name", DEFAULT_COLLECTION_NAME)

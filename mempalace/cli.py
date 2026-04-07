@@ -88,16 +88,23 @@ def cmd_mine(args):
     if remote:
         from .remote_client import RemotePalaceClient
 
+        config = MempalaceConfig()
+        local_emb = config.local_embeddings
+        batch_sz = config.embedding_batch_size
+
         client = RemotePalaceClient(remote)
         print(f"\n  Connecting to remote palace at {remote}...")
         try:
             status = client.verify()
-            print(f"  Connected. Remote palace has {status.get('total_drawers', '?')} drawers.\n")
+            print(f"  Connected. Remote palace has {status.get('total_drawers', '?')} drawers.")
+            if local_emb:
+                print(f"  Local embeddings: ON (batch size: {batch_sz})")
+            print()
         except Exception as e:
             print(f"  ERROR: Could not connect to {remote}: {e}")
             return
 
-        collection = client.collection()
+        collection = client.collection(local_embeddings=local_emb, batch_size=batch_sz)
 
         if args.mode == "convos":
             from .convo_miner import mine_convos

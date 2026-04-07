@@ -345,6 +345,62 @@ def tool_file_already_mined(source_file: str):
         return {"mined": False, "source_file": source_file}
 
 
+def tool_add_drawer_batch(drawers: list):
+    """Add multiple drawers in one call. Each drawer is a dict with keys:
+    wing, room, content, source_file, chunk_index, added_by.
+    Optionally include 'embedding' (list of floats) to skip server-side embedding.
+    """
+    col = _get_collection(create=True)
+    if not col:
+        return _no_palace()
+
+    ids = []
+    documents = []
+    metadatas = []
+    embeddings = []
+    has_embeddings = False
+    filed_at = datetime.now().isoformat()
+
+    for d in drawers:
+        wing = d["wing"]
+        room = d["room"]
+        content = d["content"]
+        source_file = d.get("source_file", "")
+        chunk_index = d.get("chunk_index", 0)
+        added_by = d.get("added_by", "batch")
+
+        drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((source_file + str(chunk_index)).encode(), usedforsecurity=False).hexdigest()[:16]}"
+        ids.append(drawer_id)
+        documents.append(content)
+        metadatas.append({
+            "wing": wing,
+            "room": room,
+            "source_file": source_file,
+            "chunk_index": chunk_index,
+            "added_by": added_by,
+            "filed_at": filed_at,
+        })
+        if "embedding" in d:
+            embeddings.append(d["embedding"])
+            has_embeddings = True
+
+    try:
+        kwargs = {
+            "ids": ids,
+            "documents": documents,
+            "metadatas": metadatas,
+        }
+        if has_embeddings and len(embeddings) == len(ids):
+            kwargs["embeddings"] = embeddings
+        col.add(**kwargs)
+        return {"success": True, "count": len(ids)}
+    except Exception as e:
+        # Try to handle partial "already exists" errors
+        if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+            return {"success": True, "count": 0, "note": "duplicates skipped"}
+        return {"success": False, "error": str(e)}
+
+
 # ==================== KNOWLEDGE GRAPH ====================
 
 
@@ -698,6 +754,20 @@ TOOLS = {
             "required": ["drawer_id", "new_content"],
         },
         "handler": tool_update_drawer,
+    },
+    "mempalace_add_drawer_batch": {
+        "description": "Add multiple drawers in one call. Accepts pre-computed embeddings to skip server-side embedding.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "drawers": {
+                    "type": "array",
+                    "description": "List of drawer objects, each with: wing, room, content, source_file, chunk_index, added_by, and optionally embedding (list of floats)",
+                },
+            },
+            "required": ["drawers"],
+        },
+        "handler": tool_add_drawer_batch,
     },
     "mempalace_file_already_mined": {
         "description": "Check if a source file has already been mined into the palace. Used by remote miners to skip already-ingested files.",
