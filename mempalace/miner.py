@@ -559,15 +559,21 @@ def scan_project(
 
 def mine(
     project_dir: str,
-    palace_path: str,
+    palace_path: str = None,
     wing_override: str = None,
     agent: str = "mempalace",
     limit: int = 0,
     dry_run: bool = False,
     respect_gitignore: bool = True,
     include_ignored: list = None,
+    collection=None,
 ):
-    """Mine a project directory into the palace."""
+    """Mine a project directory into the palace.
+
+    Args:
+        collection: Optional pre-built collection (e.g., RemoteCollection).
+                    If provided, palace_path is ignored.
+    """
 
     project_path = Path(project_dir).expanduser().resolve()
     config = load_config(project_dir)
@@ -583,13 +589,15 @@ def mine(
     if limit > 0:
         files = files[:limit]
 
+    target = "remote palace" if collection else palace_path
+
     print(f"\n{'=' * 55}")
     print("  MemPalace Mine")
     print(f"{'=' * 55}")
     print(f"  Wing:    {wing}")
     print(f"  Rooms:   {', '.join(r['name'] for r in rooms)}")
     print(f"  Files:   {len(files)}")
-    print(f"  Palace:  {palace_path}")
+    print(f"  Palace:  {target}")
     if dry_run:
         print("  DRY RUN — nothing will be filed")
     if not respect_gitignore:
@@ -598,9 +606,9 @@ def mine(
         print(f"  Include: {', '.join(sorted(normalize_include_paths(include_ignored)))}")
     print(f"{'─' * 55}\n")
 
-    if not dry_run:
+    if not dry_run and collection is None:
         collection = get_collection(palace_path)
-    else:
+    elif dry_run:
         collection = None
 
     total_drawers = 0

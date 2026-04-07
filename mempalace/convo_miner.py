@@ -255,18 +255,22 @@ def scan_convos(convo_dir: str) -> list:
 
 def mine_convos(
     convo_dir: str,
-    palace_path: str,
+    palace_path: str = None,
     wing: str = None,
     agent: str = "mempalace",
     limit: int = 0,
     dry_run: bool = False,
     extract_mode: str = "exchange",
+    collection=None,
 ):
     """Mine a directory of conversation files into the palace.
 
-    extract_mode:
-        "exchange" — default exchange-pair chunking (Q+A = one unit)
-        "general"  — general extractor: decisions, preferences, milestones, problems, emotions
+    Args:
+        collection: Optional pre-built collection (e.g., RemoteCollection).
+                    If provided, palace_path is ignored.
+        extract_mode:
+            "exchange" — default exchange-pair chunking (Q+A = one unit)
+            "general"  — general extractor: decisions, preferences, milestones, problems, emotions
     """
 
     convo_path = Path(convo_dir).expanduser().resolve()
@@ -277,18 +281,23 @@ def mine_convos(
     if limit > 0:
         files = files[:limit]
 
+    target = "remote palace" if collection else palace_path
+
     print(f"\n{'=' * 55}")
     print("  MemPalace Mine — Conversations")
     print(f"{'=' * 55}")
     print(f"  Wing:    {wing}")
     print(f"  Source:  {convo_path}")
     print(f"  Files:   {len(files)}")
-    print(f"  Palace:  {palace_path}")
+    print(f"  Palace:  {target}")
     if dry_run:
         print("  DRY RUN — nothing will be filed")
     print(f"{'-' * 55}\n")
 
-    collection = get_collection(palace_path) if not dry_run else None
+    if not dry_run and collection is None:
+        collection = get_collection(palace_path)
+    elif dry_run:
+        collection = None
 
     total_drawers = 0
     files_skipped = 0

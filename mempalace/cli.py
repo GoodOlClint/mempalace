@@ -28,6 +28,7 @@ Examples:
 
 import os
 import sys
+import json
 import argparse
 from pathlib import Path
 
@@ -60,56 +61,135 @@ def cmd_init(args):
 
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False))
-    MempalaceConfig().init()
+    remote = getattr(args, "remote", None)
+    MempalaceConfig().init(remote=remote)
+    if remote:
+        print(f"  Remote palace: {remote}")
 
 
 def cmd_mine(args):
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    config = MempalaceConfig()
+    remote = config.remote
     include_ignored = []
-    for raw in args.include_ignored or []:
+    for raw in getattr(args, "include_ignored", None) or []:
         include_ignored.extend(part.strip() for part in raw.split(",") if part.strip())
 
-    if args.mode == "convos":
-        from .convo_miner import mine_convos
+    if remote:
+        from .remote_client import RemotePalaceClient
 
-        mine_convos(
-            convo_dir=args.dir,
-            palace_path=palace_path,
-            wing=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            extract_mode=args.extract,
-        )
+        local_emb = config.local_embeddings
+        batch_sz = config.embedding_batch_size
+
+        client = RemotePalaceClient(remote)
+        print(f"\n  Connecting to remote palace at {remote}...")
+        try:
+            status = client.verify()
+            print(f"  Connected. Remote palace has {status.get('total_drawers', '?')} drawers.")
+            if local_emb:
+                print(f"  Local embeddings: ON (batch size: {batch_sz})")
+            print()
+        except Exception as e:
+            print(f"  ERROR: Could not connect to {remote}: {e}")
+            return
+
+        collection = client.collection(local_embeddings=local_emb, batch_size=batch_sz)
+
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=None,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+                collection=collection,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=None,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                collection=collection,
+            )
     else:
-        from .miner import mine
+        palace_path = os.path.expanduser(args.palace) if args.palace else config.palace_path
 
-        mine(
-            project_dir=args.dir,
-            palace_path=palace_path,
-            wing_override=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            respect_gitignore=not args.no_gitignore,
-            include_ignored=include_ignored,
-        )
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=palace_path,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=palace_path,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                respect_gitignore=not args.no_gitignore,
+                include_ignored=include_ignored,
+            )
 
 
 def cmd_search(args):
-    from .searcher import search, SearchError
+    remote = MempalaceConfig().remote
 
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-    try:
-        search(
-            query=args.query,
-            palace_path=palace_path,
-            wing=args.wing,
-            room=args.room,
-            n_results=args.results,
-        )
-    except SearchError:
-        sys.exit(1)
+    if remote:
+        from .remote_client import RemotePalaceClient
+        client = RemotePalaceClient(remote)
+        result = client.collection()._call("mempalace_search", {
+            "query": args.query,
+            "wing": args.wing or "",
+            "room": args.room or "",
+            "limit": args.results,
+        })
+        if "error" in result:
+            print(f"\n  Error: {result['error']}")
+            return
+        hits = result.get("results", [])
+        print(f"\n{'=' * 56}")
+        print(f"  Search: \"{args.query}\"  ({len(hits)} results)")
+        print(f"{'=' * 56}\n")
+        for h in hits:
+            sim = h.get("similarity", "?")
+            wing = h.get("wing", "?")
+            room = h.get("room", "?")
+            src = h.get("source_file", "?")
+            print(f"  [{sim}] {wing}/{room}  <- {src}")
+            print(f"  {h.get('text', '')[:300]}")
+            print(f"  {'─' * 56}")
+    else:
+        from .searcher import search, SearchError
+
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+        try:
+            search(
+                query=args.query,
+                palace_path=palace_path,
+                wing=args.wing,
+                room=args.room,
+                n_results=args.results,
+            )
+        except SearchError:
+            sys.exit(1)
 
 
 def cmd_wakeup(args):
@@ -148,11 +228,91 @@ def cmd_split(args):
         sys.argv = old_argv
 
 
-def cmd_status(args):
-    from .miner import status
+def cmd_serve(args):
+    """Run the MCP server as a TCP listener for remote clients."""
+    from .mcp_server import handle_request
+    import socket
+    import threading
 
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-    status(palace_path=palace_path)
+    logger = __import__("logging").getLogger("mempalace_serve")
+    port = args.tcp_port or args.port
+    host = args.host
+    lock = threading.Lock()
+
+    def handle_client(conn, addr):
+        try:
+            buf = b""
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\n" in buf:
+                    break
+            line = buf.decode("utf-8").strip()
+            if not line:
+                return
+            request = json.loads(line)
+            with lock:
+                response = handle_request(request)
+            if response is not None:
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+        except Exception as e:
+            logger.error(f"Client error ({addr}): {e}")
+            try:
+                err = {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": str(e)}}
+                conn.sendall((json.dumps(err) + "\n").encode("utf-8"))
+            except Exception:
+                pass
+        finally:
+            conn.close()
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(16)
+    print(f"MemPalace MCP Server listening on {host}:{port}")
+
+    try:
+        while True:
+            conn, addr = server.accept()
+            t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+            t.start()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        server.close()
+
+
+def cmd_status(args):
+    remote = MempalaceConfig().remote
+
+    if remote:
+        from .remote_client import RemotePalaceClient
+        client = RemotePalaceClient(remote)
+        try:
+            result = client.collection()._call("mempalace_status", {})
+        except Exception as e:
+            print(f"\n  Error connecting to {remote}: {e}")
+            return
+        if "error" in result:
+            print(f"\n  {result['error']}")
+            return
+        print(f"\n{'=' * 55}")
+        print(f"  MemPalace Status — {result.get('total_drawers', '?')} drawers (remote: {remote})")
+        print(f"{'=' * 55}\n")
+        for wing_name, count in sorted(result.get("wings", {}).items()):
+            print(f"  WING: {wing_name:30} {count:5} drawers")
+        if result.get("rooms"):
+            print()
+            for room_name, count in sorted(result.get("rooms", {}).items(), key=lambda x: x[1], reverse=True):
+                print(f"    ROOM: {room_name:20} {count:5} drawers")
+        print(f"\n{'=' * 55}\n")
+    else:
+        from .miner import status
+
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+        status(palace_path=palace_path)
 
 
 def cmd_repair(args):
@@ -367,6 +527,10 @@ def main():
     p_init.add_argument(
         "--yes", action="store_true", help="Auto-accept all detected entities (non-interactive)"
     )
+    p_init.add_argument(
+        "--remote", default=None,
+        help="Remote MCP server address (host:port) — stored globally for all subsequent commands",
+    )
 
     # mine
     p_mine = sub.add_parser("mine", help="Mine files into the palace")
@@ -460,6 +624,12 @@ def main():
     # status
     sub.add_parser("status", help="Show what's been filed")
 
+    # serve
+    p_serve = sub.add_parser("serve", help="Run the MCP server (TCP mode for remote access)")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    p_serve.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765)")
+    p_serve.add_argument("--tcp-port", type=int, default=None, help="Alias for --port")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -475,6 +645,7 @@ def main():
         "wake-up": cmd_wakeup,
         "repair": cmd_repair,
         "status": cmd_status,
+        "serve": cmd_serve,
     }
     dispatch[args.command](args)
 

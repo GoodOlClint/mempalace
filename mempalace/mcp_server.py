@@ -69,7 +69,6 @@ def tool_status():
     count = col.count()
     wings = {}
     rooms = {}
-    wing_rooms = {}
     try:
         all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
         for m in all_meta:
@@ -85,7 +84,6 @@ def tool_status():
     return {
         "total_drawers": count,
         "wings": wings,
-        "wing_rooms": wing_rooms,
         "rooms": rooms,
         "palace_path": _config.palace_path,
         "protocol": PALACE_PROTOCOL,
