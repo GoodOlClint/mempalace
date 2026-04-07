@@ -154,20 +154,47 @@ def cmd_mine(args):
 
 
 def cmd_search(args):
-    from .searcher import search
+    remote = MempalaceConfig().remote
 
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-    try:
-        search(
-            query=args.query,
-            palace_path=palace_path,
-            wing=args.wing,
-            room=args.room,
-            n_results=args.results,
-        )
-    except RuntimeError as e:
-        print(f"\n  Error: {e}")
-        sys.exit(1)
+    if remote:
+        from .remote_client import RemotePalaceClient
+        client = RemotePalaceClient(remote)
+        result = client.collection()._call("mempalace_search", {
+            "query": args.query,
+            "wing": args.wing or "",
+            "room": args.room or "",
+            "limit": args.results,
+        })
+        if "error" in result:
+            print(f"\n  Error: {result['error']}")
+            return
+        hits = result.get("results", [])
+        print(f"\n{'=' * 56}")
+        print(f"  Search: \"{args.query}\"  ({len(hits)} results)")
+        print(f"{'=' * 56}\n")
+        for h in hits:
+            sim = h.get("similarity", "?")
+            wing = h.get("wing", "?")
+            room = h.get("room", "?")
+            src = h.get("source_file", "?")
+            print(f"  [{sim}] {wing}/{room}  ← {src}")
+            print(f"  {h.get('text', '')[:300]}")
+            print(f"  {'─' * 56}")
+    else:
+        from .searcher import search
+
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+        try:
+            search(
+                query=args.query,
+                palace_path=palace_path,
+                wing=args.wing,
+                room=args.room,
+                n_results=args.results,
+            )
+        except RuntimeError as e:
+            print(f"\n  Error: {e}")
+            sys.exit(1)
 
 
 def cmd_wakeup(args):
@@ -266,10 +293,37 @@ def cmd_serve(args):
 
 
 def cmd_status(args):
-    from .miner import status
+    remote = MempalaceConfig().remote
 
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-    status(palace_path=palace_path)
+    if remote:
+        from .remote_client import RemotePalaceClient
+        client = RemotePalaceClient(remote)
+        try:
+            result = client.collection()._call("mempalace_status", {})
+        except Exception as e:
+            print(f"\n  Error connecting to {remote}: {e}")
+            return
+        if "error" in result:
+            print(f"\n  {result['error']}")
+            print(f"  Palace: {result.get('palace_path', remote)}")
+            return
+        print(f"\n{'=' * 55}")
+        print(f"  MemPalace Status — {result.get('total_drawers', '?')} drawers (remote: {remote})")
+        print(f"{'=' * 55}\n")
+        for wing_name, wing_data in sorted(result.get("wings", {}).items()):
+            print(f"  WING: {wing_name}")
+            if isinstance(wing_data, dict):
+                for room, count in sorted(wing_data.items(), key=lambda x: x[1], reverse=True):
+                    print(f"    ROOM: {room:20} {count:5} drawers")
+            else:
+                print(f"    {wing_data} drawers")
+            print()
+        print(f"{'=' * 55}\n")
+    else:
+        from .miner import status
+
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+        status(palace_path=palace_path)
 
 
 def cmd_compress(args):
