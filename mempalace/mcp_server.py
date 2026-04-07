@@ -725,6 +725,17 @@ def handle_request(request):
                 "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
             }
+        # Coerce argument types based on input_schema.
+        # MCP JSON transport may deliver integers as floats or strings;
+        # ChromaDB and Python slicing require native int.
+        schema_props = TOOLS[tool_name]["input_schema"].get("properties", {})
+        for key, value in list(tool_args.items()):
+            prop_schema = schema_props.get(key, {})
+            declared_type = prop_schema.get("type")
+            if declared_type == "integer" and not isinstance(value, int):
+                tool_args[key] = int(value)
+            elif declared_type == "number" and not isinstance(value, (int, float)):
+                tool_args[key] = float(value)
         try:
             result = TOOLS[tool_name]["handler"](**tool_args)
             return {
