@@ -140,6 +140,12 @@ def detect_room(filepath: Path, content: str, rooms: list, project_path: Path) -
         if scores[best] > 0:
             return best
 
+    # If there's only one non-general room, use it as default
+    # (common for grouped wings where the project IS the room)
+    non_general = [r for r in rooms if r["name"] != "general"]
+    if len(non_general) == 1:
+        return non_general[0]["name"]
+
     return "general"
 
 
