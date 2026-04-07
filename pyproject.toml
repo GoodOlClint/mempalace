@@ -41,6 +41,9 @@ Repository = "https://github.com/milla-jovovich/mempalace"
 [tool.setuptools.packages.find]
 include = ["mempalace*"]
 
+[tool.setuptools.package-data]
+mempalace = ["prompts/*.txt"]
+
 [project.scripts]
 mempalace = "mempalace:main"
 

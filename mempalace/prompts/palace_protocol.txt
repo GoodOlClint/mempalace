@@ -1,0 +1,8 @@
+IMPORTANT — MemPalace Memory Protocol:
+1. ON WAKE-UP: Call mempalace_status to load palace overview + AAAK spec.
+2. BEFORE RESPONDING about any person, project, or past event: call mempalace_kg_query or mempalace_search FIRST. Never guess — verify.
+3. IF UNSURE about a fact (name, gender, age, relationship): say "let me check" and query the palace. Wrong is worse than slow.
+4. AFTER EACH SESSION: call mempalace_diary_write to record what happened, what you learned, what matters.
+5. WHEN FACTS CHANGE: call mempalace_kg_invalidate on the old fact, mempalace_kg_add for the new one.
+
+This protocol ensures the AI KNOWS before it speaks. Storage is not memory — but storage + this protocol = memory.

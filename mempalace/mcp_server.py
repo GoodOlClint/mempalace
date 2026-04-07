@@ -15,6 +15,7 @@ Tools (read):
 Tools (write):
   mempalace_add_drawer      — file verbatim content into a wing/room
   mempalace_delete_drawer   — remove a drawer by ID
+  mempalace_update_drawer   — update a drawer's content by ID, preserving metadata
 """
 
 import sys
@@ -22,6 +23,7 @@ import json
 import logging
 import hashlib
 from datetime import datetime
+from pathlib import Path
 
 from .config import MempalaceConfig
 from .searcher import search_memories
@@ -30,12 +32,23 @@ import chromadb
 
 from .knowledge_graph import KnowledgeGraph
 
-_kg = KnowledgeGraph()
-
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("mempalace_mcp")
 
 _config = MempalaceConfig()
+
+_kg_instance = None
+
+
+def _get_kg() -> KnowledgeGraph:
+    """Lazily initialize the KnowledgeGraph using the configured palace path."""
+    global _kg_instance
+    if _kg_instance is None:
+        import os
+
+        db_path = os.path.join(_config.palace_path, "knowledge_graph.sqlite3")
+        _kg_instance = KnowledgeGraph(db_path=db_path)
+    return _kg_instance
 
 
 def _get_collection(create=False):
@@ -90,33 +103,14 @@ def tool_status():
 # Included in status response so the AI learns it on first wake-up call.
 # Also available via mempalace_get_aaak_spec tool.
 
-PALACE_PROTOCOL = """IMPORTANT — MemPalace Memory Protocol:
-1. ON WAKE-UP: Call mempalace_status to load palace overview + AAAK spec.
-2. BEFORE RESPONDING about any person, project, or past event: call mempalace_kg_query or mempalace_search FIRST. Never guess — verify.
-3. IF UNSURE about a fact (name, gender, age, relationship): say "let me check" and query the palace. Wrong is worse than slow.
-4. AFTER EACH SESSION: call mempalace_diary_write to record what happened, what you learned, what matters.
-5. WHEN FACTS CHANGE: call mempalace_kg_invalidate on the old fact, mempalace_kg_add for the new one.
 
-This protocol ensures the AI KNOWS before it speaks. Storage is not memory — but storage + this protocol = memory."""
+def _load_prompt(name: str) -> str:
+    prompts_dir = Path(__file__).parent / "prompts"
+    return (prompts_dir / name).read_text()
 
-AAAK_SPEC = """AAAK is a compressed memory dialect that MemPalace uses for efficient storage.
-It is designed to be readable by both humans and LLMs without decoding.
 
-FORMAT:
-  ENTITIES: 3-letter uppercase codes. ALC=Alice, JOR=Jordan, RIL=Riley, MAX=Max, BEN=Ben.
-  EMOTIONS: *action markers* before/during text. *warm*=joy, *fierce*=determined, *raw*=vulnerable, *bloom*=tenderness.
-  STRUCTURE: Pipe-separated fields. FAM: family | PROJ: projects | ⚠: warnings/reminders.
-  DATES: ISO format (2026-03-31). COUNTS: Nx = N mentions (e.g., 570x).
-  IMPORTANCE: ★ to ★★★★★ (1-5 scale).
-  HALLS: hall_facts, hall_events, hall_discoveries, hall_preferences, hall_advice.
-  WINGS: wing_user, wing_agent, wing_team, wing_code, wing_myproject, wing_hardware, wing_ue5, wing_ai_research.
-  ROOMS: Hyphenated slugs representing named ideas (e.g., chromadb-setup, gpu-pricing).
-
-EXAMPLE:
-  FAM: ALC→♡JOR | 2D(kids): RIL(18,sports) MAX(11,chess+swimming) | BEN(contributor)
-
-Read AAAK naturally — expand codes mentally, treat *markers* as emotional context.
-When WRITING AAAK: use entity codes, mark emotions, keep structure tight."""
+PALACE_PROTOCOL = _load_prompt("palace_protocol.txt")
+AAAK_SPEC = _load_prompt("aaak_spec.txt")
 
 
 def tool_list_wings():
@@ -303,12 +297,35 @@ def tool_delete_drawer(drawer_id: str):
         return {"success": False, "error": str(e)}
 
 
+def tool_update_drawer(drawer_id: str, new_content: str):
+    """Update a drawer's content by ID. Preserves all existing metadata, adds edited_at."""
+    col = _get_collection()
+    if not col:
+        return _no_palace()
+    existing = col.get(ids=[drawer_id], include=["metadatas"])
+    if not existing["ids"]:
+        return {"success": False, "error": "Drawer not found", "drawer_id": drawer_id}
+    edited_at = datetime.utcnow().isoformat() + "Z"
+    metadata = existing["metadatas"][0]
+    metadata["edited_at"] = edited_at
+    try:
+        col.update(
+            ids=[drawer_id],
+            documents=[new_content],
+            metadatas=[metadata],
+        )
+        logger.info(f"Updated drawer: {drawer_id}")
+        return {"success": True, "drawer_id": drawer_id, "edited_at": edited_at}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ==================== KNOWLEDGE GRAPH ====================
 
 
 def tool_kg_query(entity: str, as_of: str = None, direction: str = "both"):
     """Query the knowledge graph for an entity's relationships."""
-    results = _kg.query_entity(entity, as_of=as_of, direction=direction)
+    results = _get_kg().query_entity(entity, as_of=as_of, direction=direction)
     return {"entity": entity, "as_of": as_of, "facts": results, "count": len(results)}
 
 
@@ -316,7 +333,7 @@ def tool_kg_add(
     subject: str, predicate: str, object: str, valid_from: str = None, source_closet: str = None
 ):
     """Add a relationship to the knowledge graph."""
-    triple_id = _kg.add_triple(
+    triple_id = _get_kg().add_triple(
         subject, predicate, object, valid_from=valid_from, source_closet=source_closet
     )
     return {"success": True, "triple_id": triple_id, "fact": f"{subject} → {predicate} → {object}"}
@@ -324,7 +341,7 @@ def tool_kg_add(
 
 def tool_kg_invalidate(subject: str, predicate: str, object: str, ended: str = None):
     """Mark a fact as no longer true (set end date)."""
-    _kg.invalidate(subject, predicate, object, ended=ended)
+    _get_kg().invalidate(subject, predicate, object, ended=ended)
     return {
         "success": True,
         "fact": f"{subject} → {predicate} → {object}",
@@ -334,13 +351,13 @@ def tool_kg_invalidate(subject: str, predicate: str, object: str, ended: str = N
 
 def tool_kg_timeline(entity: str = None):
     """Get chronological timeline of facts, optionally for one entity."""
-    results = _kg.timeline(entity)
+    results = _get_kg().timeline(entity)
     return {"entity": entity or "all", "timeline": results, "count": len(results)}
 
 
 def tool_kg_stats():
     """Knowledge graph overview: entities, triples, relationship types."""
-    return _kg.stats()
+    return _get_kg().stats()
 
 
 # ==================== AGENT DIARY ====================
@@ -644,6 +661,18 @@ TOOLS = {
             "required": ["drawer_id"],
         },
         "handler": tool_delete_drawer,
+    },
+    "mempalace_update_drawer": {
+        "description": "Update a drawer's content by ID. Preserves metadata, adds edited_at timestamp.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "drawer_id": {"type": "string", "description": "ID of the drawer to update"},
+                "new_content": {"type": "string", "description": "Replacement content for the drawer"},
+            },
+            "required": ["drawer_id", "new_content"],
+        },
+        "handler": tool_update_drawer,
     },
     "mempalace_diary_write": {
         "description": "Write to your personal agent diary in AAAK format. Your observations, thoughts, what you worked on, what matters. Each agent has their own diary with full history. Write in AAAK for compression — e.g. 'SESSION:2026-04-04|built.palace.graph+diary.tools|ALC.req:agent.diaries.in.aaak|★★★'. Use entity codes from the AAAK spec.",
