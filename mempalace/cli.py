@@ -37,6 +37,18 @@ from .config import MempalaceConfig
 def cmd_init(args):
     import json
     from pathlib import Path
+    from .room_detector_local import save_config
+
+    project_path = Path(args.dir).expanduser().resolve()
+    wing_name = args.wing or project_path.name.lower().replace(" ", "_").replace("-", "_")
+
+    if args.blank:
+        # Blank init — skip all detection, create minimal config
+        rooms = [{"name": "general", "description": "All project files"}]
+        save_config(str(project_path), wing_name, rooms)
+        MempalaceConfig().init()
+        return
+
     from .entity_detector import scan_for_detection, detect_entities, confirm_entities
     from .room_detector_local import detect_rooms_local
 
@@ -51,7 +63,7 @@ def cmd_init(args):
             confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
             # Save confirmed entities to <project>/entities.json for the miner
             if confirmed["people"] or confirmed["projects"]:
-                entities_path = Path(args.dir).expanduser().resolve() / "entities.json"
+                entities_path = project_path / "entities.json"
                 with open(entities_path, "w") as f:
                     json.dump(confirmed, f, indent=2)
                 print(f"  Entities saved: {entities_path}")
@@ -59,7 +71,7 @@ def cmd_init(args):
             print("  No entities detected — proceeding with directory-based rooms.")
 
     # Pass 2: detect rooms from folder structure
-    detect_rooms_local(project_dir=args.dir)
+    detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False), wing_override=wing_name)
     MempalaceConfig().init()
 
 
@@ -293,7 +305,15 @@ def main():
     p_init = sub.add_parser("init", help="Detect rooms from your folder structure")
     p_init.add_argument("dir", help="Project directory to set up")
     p_init.add_argument(
-        "--yes", action="store_true", help="Auto-accept all detected entities (non-interactive)"
+        "--yes", "-y", action="store_true", help="Auto-accept all detected entities and rooms (fully non-interactive)"
+    )
+    p_init.add_argument(
+        "--blank", action="store_true",
+        help="Skip entity/room detection entirely — create minimal config with a single 'general' room",
+    )
+    p_init.add_argument(
+        "--wing", default=None,
+        help="Override wing name (default: directory name)",
     )
 
     # mine

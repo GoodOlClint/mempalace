@@ -215,8 +215,12 @@ def print_proposed_structure(project_name: str, rooms: list, total_files: int, s
     print(f"\n{'─' * 55}")
 
 
-def get_user_approval(rooms: list) -> list:
-    """Same approval flow as AI version."""
+def get_user_approval(rooms: list, yes: bool = False) -> list:
+    """Same approval flow as AI version. If yes=True, auto-accept."""
+    if yes:
+        print(f"\n  Auto-accepting {len(rooms)} rooms.")
+        return rooms
+
     print("  Review the proposed rooms above.")
     print("  Options:")
     print("    [enter]  Accept all rooms")
@@ -267,10 +271,10 @@ def save_config(project_dir: str, project_name: str, rooms: list):
     print(f"\n{'=' * 55}\n")
 
 
-def detect_rooms_local(project_dir: str):
+def detect_rooms_local(project_dir: str, yes: bool = False, wing_override: str = None):
     """Main entry point for local setup."""
     project_path = Path(project_dir).expanduser().resolve()
-    project_name = project_path.name.lower().replace(" ", "_").replace("-", "_")
+    project_name = wing_override or project_path.name.lower().replace(" ", "_").replace("-", "_")
 
     if not project_path.exists():
         print(f"ERROR: Directory not found: {project_dir}")
@@ -296,5 +300,5 @@ def detect_rooms_local(project_dir: str):
         source = "fallback (flat project)"
 
     print_proposed_structure(project_name, rooms, len(files), source)
-    approved_rooms = get_user_approval(rooms)
+    approved_rooms = get_user_approval(rooms, yes=yes)
     save_config(project_dir, project_name, approved_rooms)
