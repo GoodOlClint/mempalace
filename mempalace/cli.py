@@ -310,13 +310,15 @@ def cmd_status(args):
         print(f"\n{'=' * 55}")
         print(f"  MemPalace Status — {result.get('total_drawers', '?')} drawers (remote: {remote})")
         print(f"{'=' * 55}\n")
-        for wing_name, wing_data in sorted(result.get("wings", {}).items()):
+        wing_rooms = result.get("wing_rooms", {})
+        wings = result.get("wings", {})
+        for wing_name in sorted(wings.keys()):
             print(f"  WING: {wing_name}")
-            if isinstance(wing_data, dict):
-                for room, count in sorted(wing_data.items(), key=lambda x: x[1], reverse=True):
+            if wing_name in wing_rooms:
+                for room, count in sorted(wing_rooms[wing_name].items(), key=lambda x: x[1], reverse=True):
                     print(f"    ROOM: {room:20} {count:5} drawers")
             else:
-                print(f"    {wing_data} drawers")
+                print(f"    {wings[wing_name]} drawers")
             print()
         print(f"{'=' * 55}\n")
     else:

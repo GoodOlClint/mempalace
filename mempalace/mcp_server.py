@@ -88,6 +88,7 @@ def tool_status():
     count = col.count()
     wings = {}
     rooms = {}
+    wing_rooms = {}
     try:
         all_meta = col.get(include=["metadatas"])["metadatas"]
         for m in all_meta:
@@ -95,11 +96,15 @@ def tool_status():
             r = m.get("room", "unknown")
             wings[w] = wings.get(w, 0) + 1
             rooms[r] = rooms.get(r, 0) + 1
+            if w not in wing_rooms:
+                wing_rooms[w] = {}
+            wing_rooms[w][r] = wing_rooms[w].get(r, 0) + 1
     except Exception:
         pass
     return {
         "total_drawers": count,
         "wings": wings,
+        "wing_rooms": wing_rooms,
         "rooms": rooms,
         "palace_path": _config.palace_path,
         "protocol": PALACE_PROTOCOL,
