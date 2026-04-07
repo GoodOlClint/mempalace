@@ -159,6 +159,63 @@ def cmd_split(args):
         sys.argv = old_argv
 
 
+def cmd_serve(args):
+    from .mcp_server import handle_request
+
+    import socket
+    import threading
+    import logging
+
+    logger = logging.getLogger("mempalace_serve")
+    port = args.tcp_port or args.port
+    host = args.host
+    lock = threading.Lock()
+
+    def handle_client(conn, addr):
+        try:
+            buf = b""
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\n" in buf:
+                    break
+            line = buf.decode("utf-8").strip()
+            if not line:
+                return
+            request = json.loads(line)
+            with lock:
+                response = handle_request(request)
+            if response is not None:
+                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+        except Exception as e:
+            logger.error(f"Client error ({addr}): {e}")
+            try:
+                error_resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": str(e)}}
+                conn.sendall((json.dumps(error_resp) + "\n").encode("utf-8"))
+            except Exception:
+                pass
+        finally:
+            conn.close()
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(16)
+    print(f"MemPalace MCP Server listening on {host}:{port}")
+
+    try:
+        while True:
+            conn, addr = server.accept()
+            t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+            t.start()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        server.close()
+
+
 def cmd_status(args):
     from .miner import status
 
@@ -396,6 +453,12 @@ def main():
     # status
     sub.add_parser("status", help="Show what's been filed")
 
+    # serve
+    p_serve = sub.add_parser("serve", help="Run the MCP server (TCP mode for remote access)")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    p_serve.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765)")
+    p_serve.add_argument("--tcp-port", type=int, default=None, help="Alias for --port (backwards compat)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -410,6 +473,7 @@ def main():
         "compress": cmd_compress,
         "wake-up": cmd_wakeup,
         "status": cmd_status,
+        "serve": cmd_serve,
     }
     dispatch[args.command](args)
 
