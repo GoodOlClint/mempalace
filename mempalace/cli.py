@@ -181,20 +181,31 @@ def cmd_compress(args):
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
         sys.exit(1)
 
-    # Query drawers in the wing
+    # Query drawers in batches to avoid SQLite variable limit (~999)
     where = {"wing": args.wing} if args.wing else None
-    try:
-        kwargs = {"include": ["documents", "metadatas"]}
-        if where:
-            kwargs["where"] = where
-        results = col.get(**kwargs)
-    except Exception as e:
-        print(f"\n  Error reading drawers: {e}")
-        sys.exit(1)
-
-    docs = results["documents"]
-    metas = results["metadatas"]
-    ids = results["ids"]
+    _BATCH = 500
+    docs, metas, ids = [], [], []
+    offset = 0
+    while True:
+        try:
+            kwargs = {"include": ["documents", "metadatas"], "limit": _BATCH, "offset": offset}
+            if where:
+                kwargs["where"] = where
+            batch = col.get(**kwargs)
+        except Exception as e:
+            if not docs:
+                print(f"\n  Error reading drawers: {e}")
+                sys.exit(1)
+            break
+        batch_docs = batch.get("documents", [])
+        if not batch_docs:
+            break
+        docs.extend(batch_docs)
+        metas.extend(batch.get("metadatas", []))
+        ids.extend(batch.get("ids", []))
+        offset += len(batch_docs)
+        if len(batch_docs) < _BATCH:
+            break
 
     if not docs:
         wing_label = f" in wing '{args.wing}'" if args.wing else ""
