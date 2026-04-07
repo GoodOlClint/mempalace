@@ -259,7 +259,14 @@ def get_user_approval(rooms: list, yes: bool = False) -> list:
 def save_config(project_dir: str, project_name: str, rooms: list):
     config = {
         "wing": project_name,
-        "rooms": [{"name": r["name"], "description": r["description"]} for r in rooms],
+        "rooms": [
+            {
+                "name": r["name"],
+                "description": r["description"],
+                **({"keywords": r["keywords"]} if r.get("keywords") else {}),
+            }
+            for r in rooms
+        ],
     }
     config_path = Path(project_dir).expanduser().resolve() / "mempalace.yaml"
     with open(config_path, "w") as f:

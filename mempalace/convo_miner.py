@@ -39,6 +39,9 @@ SKIP_DIRS = {
     "build",
     ".next",
     ".mempalace",
+    "tool-results",
+    "memory",
+    "subagents",
 }
 
 MIN_CHUNK_SIZE = 30
@@ -236,6 +239,9 @@ def scan_convos(convo_dir: str) -> list:
     for root, dirs, filenames in os.walk(convo_path):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for filename in filenames:
+            # Skip metadata files and non-conversation artifacts
+            if filename.endswith(".meta.json"):
+                continue
             filepath = Path(root) / filename
             if filepath.suffix.lower() in CONVO_EXTENSIONS:
                 files.append(filepath)
