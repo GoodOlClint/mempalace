@@ -64,31 +64,73 @@ def cmd_init(args):
 
 
 def cmd_mine(args):
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    remote = getattr(args, "remote", None)
 
-    if args.mode == "convos":
-        from .convo_miner import mine_convos
+    if remote:
+        from .remote_client import RemotePalaceClient
 
-        mine_convos(
-            convo_dir=args.dir,
-            palace_path=palace_path,
-            wing=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            extract_mode=args.extract,
-        )
+        client = RemotePalaceClient(remote)
+        print(f"\n  Connecting to remote palace at {remote}...")
+        try:
+            status = client.verify()
+            print(f"  Connected. Remote palace has {status.get('total_drawers', '?')} drawers.\n")
+        except Exception as e:
+            print(f"  ERROR: Could not connect to {remote}: {e}")
+            return
+
+        collection = client.collection()
+
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=None,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+                collection=collection,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=None,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                collection=collection,
+            )
     else:
-        from .miner import mine
+        palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
 
-        mine(
-            project_dir=args.dir,
-            palace_path=palace_path,
-            wing_override=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-        )
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=palace_path,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=palace_path,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
 
 
 def cmd_search(args):
@@ -302,6 +344,11 @@ def main():
         choices=["exchange", "general"],
         default="exchange",
         help="Extraction strategy for convos mode: 'exchange' (default) or 'general' (5 memory types)",
+    )
+    p_mine.add_argument(
+        "--remote",
+        default=None,
+        help="Remote MCP server address (host:port) — mine locally, ingest remotely",
     )
 
     # search

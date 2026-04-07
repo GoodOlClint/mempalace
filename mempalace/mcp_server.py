@@ -4,23 +4,31 @@ MemPalace MCP Server — read/write palace access for Claude Code
 ================================================================
 Install: claude mcp add mempalace -- python /path/to/mcp_server.py
 
+Transport modes:
+  stdio  — default, for Claude Code MCP integration
+  tcp    — for remote mining clients (set MEMPALACE_TCP_PORT or --tcp-port)
+
 Tools (read):
-  mempalace_status          — total drawers, wing/room breakdown
-  mempalace_list_wings      — all wings with drawer counts
-  mempalace_list_rooms      — rooms within a wing
-  mempalace_get_taxonomy    — full wing → room → count tree
-  mempalace_search          — semantic search, optional wing/room filter
-  mempalace_check_duplicate — check if content already exists before filing
+  mempalace_status              — total drawers, wing/room breakdown
+  mempalace_list_wings          — all wings with drawer counts
+  mempalace_list_rooms          — rooms within a wing
+  mempalace_get_taxonomy        — full wing → room → count tree
+  mempalace_search              — semantic search, optional wing/room filter
+  mempalace_check_duplicate     — check if content already exists before filing
+  mempalace_file_already_mined  — check if a source file has been ingested
 
 Tools (write):
   mempalace_add_drawer      — file verbatim content into a wing/room
   mempalace_delete_drawer   — remove a drawer by ID
 """
 
+import os
 import sys
 import json
+import socket
 import logging
 import hashlib
+import threading
 from datetime import datetime
 
 from .config import MempalaceConfig
@@ -301,6 +309,18 @@ def tool_delete_drawer(drawer_id: str):
         return {"success": True, "drawer_id": drawer_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def tool_file_already_mined(source_file: str):
+    """Check if a source file has already been mined into the palace."""
+    col = _get_collection()
+    if not col:
+        return {"mined": False, "palace_exists": False}
+    try:
+        results = col.get(where={"source_file": source_file}, limit=1)
+        return {"mined": len(results.get("ids", [])) > 0, "source_file": source_file}
+    except Exception:
+        return {"mined": False, "source_file": source_file}
 
 
 # ==================== KNOWLEDGE GRAPH ====================
@@ -645,6 +665,20 @@ TOOLS = {
         },
         "handler": tool_delete_drawer,
     },
+    "mempalace_file_already_mined": {
+        "description": "Check if a source file has already been mined into the palace. Used by remote miners to skip already-ingested files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_file": {
+                    "type": "string",
+                    "description": "Full path of the source file to check",
+                },
+            },
+            "required": ["source_file"],
+        },
+        "handler": tool_file_already_mined,
+    },
     "mempalace_diary_write": {
         "description": "Write to your personal agent diary in AAAK format. Your observations, thoughts, what you worked on, what matters. Each agent has their own diary with full history. Write in AAAK for compression — e.g. 'SESSION:2026-04-04|built.palace.graph+diary.tools|ALC.req:agent.diaries.in.aaak|★★★'. Use entity codes from the AAAK spec.",
         "input_schema": {
@@ -743,8 +777,66 @@ def handle_request(request):
     }
 
 
-def main():
-    logger.info("MemPalace MCP Server starting...")
+def _handle_tcp_client(conn, addr, lock):
+    """Handle a single TCP client connection. One request per connection."""
+    try:
+        buf = b""
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\n" in buf:
+                break
+
+        line = buf.decode("utf-8").strip()
+        if not line:
+            return
+
+        request = json.loads(line)
+        # Serialize ChromaDB access to prevent concurrent write corruption
+        with lock:
+            response = handle_request(request)
+        if response is not None:
+            conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+    except Exception as e:
+        logger.error(f"TCP client error ({addr}): {e}")
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32000, "message": str(e)},
+        }
+        try:
+            conn.sendall((json.dumps(error_response) + "\n").encode("utf-8"))
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+def main_tcp(host: str = "0.0.0.0", port: int = 8765):
+    """Run the MCP server over TCP for remote mining clients."""
+    lock = threading.Lock()
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(16)
+    logger.info(f"MemPalace MCP Server (TCP) listening on {host}:{port}")
+
+    try:
+        while True:
+            conn, addr = server.accept()
+            t = threading.Thread(target=_handle_tcp_client, args=(conn, addr, lock), daemon=True)
+            t.start()
+    except KeyboardInterrupt:
+        logger.info("Shutting down TCP server...")
+    finally:
+        server.close()
+
+
+def main_stdio():
+    """Run the MCP server over stdio for Claude Code integration."""
+    logger.info("MemPalace MCP Server (stdio) starting...")
     while True:
         try:
             line = sys.stdin.readline()
@@ -762,6 +854,28 @@ def main():
             break
         except Exception as e:
             logger.error(f"Server error: {e}")
+
+
+def main():
+    """Entry point — select transport based on env var or CLI flag."""
+    tcp_port = os.environ.get("MEMPALACE_TCP_PORT")
+    tcp_host = os.environ.get("MEMPALACE_TCP_HOST", "0.0.0.0")
+
+    # Check CLI args for --tcp-port
+    if "--tcp-port" in sys.argv:
+        idx = sys.argv.index("--tcp-port")
+        if idx + 1 < len(sys.argv):
+            tcp_port = sys.argv[idx + 1]
+
+    if "--tcp-host" in sys.argv:
+        idx = sys.argv.index("--tcp-host")
+        if idx + 1 < len(sys.argv):
+            tcp_host = sys.argv[idx + 1]
+
+    if tcp_port:
+        main_tcp(host=tcp_host, port=int(tcp_port))
+    else:
+        main_stdio()
 
 
 if __name__ == "__main__":
