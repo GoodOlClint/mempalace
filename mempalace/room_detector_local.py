@@ -263,7 +263,7 @@ def save_config(project_dir: str, project_name: str, rooms: list):
             {
                 "name": r["name"],
                 "description": r["description"],
-                **({"keywords": r["keywords"]} if r.get("keywords") else {}),
+                "keywords": r.get("keywords", [r["name"]]),
             }
             for r in rooms
         ],
