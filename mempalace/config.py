@@ -98,6 +98,14 @@ class MempalaceConfig:
         return self._file_config.get("palace_path", DEFAULT_PALACE_PATH)
 
     @property
+    def remote(self):
+        """Remote MCP server address (host:port). When set, the local MCP server proxies to this."""
+        env_val = os.environ.get("MEMPALACE_REMOTE")
+        if env_val:
+            return env_val
+        return self._file_config.get("remote", None)
+
+    @property
     def collection_name(self):
         """ChromaDB collection name."""
         return self._file_config.get("collection_name", DEFAULT_COLLECTION_NAME)

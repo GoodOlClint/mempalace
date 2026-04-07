@@ -18,8 +18,10 @@ Tools (write):
   mempalace_update_drawer   — update a drawer's content by ID, preserving metadata
 """
 
+import os
 import sys
 import json
+import socket
 import logging
 import hashlib
 from datetime import datetime
@@ -823,8 +825,38 @@ def handle_request(request):
     }
 
 
+def _forward_to_remote(request: dict, host: str, port: int, timeout: float = 30.0) -> dict:
+    """Forward a JSON-RPC request to a remote MCP server over TCP."""
+    payload = json.dumps(request) + "\n"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        sock.sendall(payload.encode("utf-8"))
+        buf = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\n" in buf:
+                break
+        return json.loads(buf.decode("utf-8").strip())
+    finally:
+        sock.close()
+
+
 def main():
-    logger.info("MemPalace MCP Server starting...")
+    """Entry point — stdio MCP server, optionally proxying to a remote palace."""
+    remote = os.environ.get("MEMPALACE_REMOTE")
+
+    if remote:
+        host, port_str = remote.rsplit(":", 1)
+        port = int(port_str)
+        logger.info(f"MemPalace MCP Server starting (proxy → {remote})...")
+    else:
+        logger.info("MemPalace MCP Server starting (local)...")
+
     while True:
         try:
             line = sys.stdin.readline()
@@ -834,7 +866,25 @@ def main():
             if not line:
                 continue
             request = json.loads(line)
-            response = handle_request(request)
+
+            if remote:
+                method = request.get("method", "")
+                # Handle protocol handshake locally, forward tool calls to remote
+                if method in ("initialize", "notifications/initialized", "tools/list"):
+                    response = handle_request(request)
+                else:
+                    try:
+                        response = _forward_to_remote(request, host, port)
+                    except Exception as e:
+                        logger.error(f"Remote proxy error: {e}")
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request.get("id"),
+                            "error": {"code": -32000, "message": f"Remote palace unreachable: {e}"},
+                        }
+            else:
+                response = handle_request(request)
+
             if response is not None:
                 sys.stdout.write(json.dumps(response) + "\n")
                 sys.stdout.flush()
