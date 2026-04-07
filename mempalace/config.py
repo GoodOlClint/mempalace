@@ -98,6 +98,31 @@ class MempalaceConfig:
         return self._file_config.get("palace_path", DEFAULT_PALACE_PATH)
 
     @property
+    def remote(self):
+        """Remote MCP server address (host:port). When set, commands proxy to this server."""
+        env_val = os.environ.get("MEMPALACE_REMOTE")
+        if env_val:
+            return env_val
+        return self._file_config.get("remote", None)
+
+    @property
+    def local_embeddings(self):
+        """Whether to compute embeddings locally before sending to remote server.
+        Dramatically faster on Apple Silicon vs VM CPU. Default False."""
+        env_val = os.environ.get("MEMPALACE_LOCAL_EMBEDDINGS")
+        if env_val:
+            return env_val.lower() in ("1", "true", "yes")
+        return self._file_config.get("local_embeddings", False)
+
+    @property
+    def embedding_batch_size(self):
+        """Number of drawers to batch per remote write. Default 50."""
+        env_val = os.environ.get("MEMPALACE_BATCH_SIZE")
+        if env_val:
+            return int(env_val)
+        return self._file_config.get("embedding_batch_size", 50)
+
+    @property
     def collection_name(self):
         """ChromaDB collection name."""
         return self._file_config.get("collection_name", DEFAULT_COLLECTION_NAME)
@@ -123,7 +148,7 @@ class MempalaceConfig:
         """Mapping of hall names to keyword lists."""
         return self._file_config.get("hall_keywords", DEFAULT_HALL_KEYWORDS)
 
-    def init(self):
+    def init(self, remote: str = None):
         """Create config directory and write default config.json if it doesn't exist."""
         self._config_dir.mkdir(parents=True, exist_ok=True)
         if not self._config_file.exists():
@@ -133,8 +158,14 @@ class MempalaceConfig:
                 "topic_wings": DEFAULT_TOPIC_WINGS,
                 "hall_keywords": DEFAULT_HALL_KEYWORDS,
             }
+            if remote:
+                default_config["remote"] = remote
             with open(self._config_file, "w") as f:
                 json.dump(default_config, f, indent=2)
+        elif remote:
+            self._file_config["remote"] = remote
+            with open(self._config_file, "w") as f:
+                json.dump(self._file_config, f, indent=2)
         return self._config_file
 
     def save_people_map(self, people_map):

@@ -17,8 +17,10 @@ Tools (write):
   mempalace_delete_drawer   — remove a drawer by ID
 """
 
+import os
 import sys
 import json
+import socket
 import logging
 import hashlib
 from datetime import datetime
@@ -67,6 +69,7 @@ def tool_status():
     count = col.count()
     wings = {}
     rooms = {}
+    wing_rooms = {}
     try:
         all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
         for m in all_meta:
@@ -74,11 +77,15 @@ def tool_status():
             r = m.get("room", "unknown")
             wings[w] = wings.get(w, 0) + 1
             rooms[r] = rooms.get(r, 0) + 1
+            if w not in wing_rooms:
+                wing_rooms[w] = {}
+            wing_rooms[w][r] = wing_rooms[w].get(r, 0) + 1
     except Exception:
         pass
     return {
         "total_drawers": count,
         "wings": wings,
+        "wing_rooms": wing_rooms,
         "rooms": rooms,
         "palace_path": _config.palace_path,
         "protocol": PALACE_PROTOCOL,
@@ -300,6 +307,69 @@ def tool_delete_drawer(drawer_id: str):
         logger.info(f"Deleted drawer: {drawer_id}")
         return {"success": True, "drawer_id": drawer_id}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_file_already_mined(source_file: str):
+    """Check if a source file has already been mined into the palace."""
+    col = _get_collection()
+    if not col:
+        return {"mined": False, "palace_exists": False}
+    try:
+        results = col.get(where={"source_file": source_file}, limit=1)
+        return {"mined": len(results.get("ids", [])) > 0, "source_file": source_file}
+    except Exception:
+        return {"mined": False, "source_file": source_file}
+
+
+def tool_add_drawer_batch(drawers: list):
+    """Add multiple drawers in one call. Each drawer is a dict with keys:
+    wing, room, content, source_file, chunk_index, added_by.
+    Optionally include 'embedding' (list of floats) to skip server-side embedding.
+    """
+    col = _get_collection(create=True)
+    if not col:
+        return _no_palace()
+
+    ids = []
+    documents = []
+    metadatas = []
+    embeddings = []
+    has_embeddings = False
+    filed_at = datetime.now().isoformat()
+
+    for d in drawers:
+        wing = d["wing"]
+        room = d["room"]
+        content = d["content"]
+        source_file = d.get("source_file", "")
+        chunk_index = d.get("chunk_index", 0)
+        added_by = d.get("added_by", "batch")
+
+        drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((source_file + str(chunk_index)).encode(), usedforsecurity=False).hexdigest()[:16]}"
+        ids.append(drawer_id)
+        documents.append(content)
+        metadatas.append({
+            "wing": wing,
+            "room": room,
+            "source_file": source_file,
+            "chunk_index": chunk_index,
+            "added_by": added_by,
+            "filed_at": filed_at,
+        })
+        if "embedding" in d:
+            embeddings.append(d["embedding"])
+            has_embeddings = True
+
+    try:
+        kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
+        if has_embeddings and len(embeddings) == len(ids):
+            kwargs["embeddings"] = embeddings
+        col.add(**kwargs)
+        return {"success": True, "count": len(ids)}
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+            return {"success": True, "count": 0, "note": "duplicates skipped"}
         return {"success": False, "error": str(e)}
 
 
@@ -646,6 +716,28 @@ TOOLS = {
         },
         "handler": tool_delete_drawer,
     },
+    "mempalace_file_already_mined": {
+        "description": "Check if a source file has already been mined into the palace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_file": {"type": "string", "description": "Full path of the source file to check"},
+            },
+            "required": ["source_file"],
+        },
+        "handler": tool_file_already_mined,
+    },
+    "mempalace_add_drawer_batch": {
+        "description": "Add multiple drawers in one call. Accepts pre-computed embeddings to skip server-side embedding.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "drawers": {"type": "array", "description": "List of drawer objects with: wing, room, content, source_file, chunk_index, added_by, and optionally embedding"},
+            },
+            "required": ["drawers"],
+        },
+        "handler": tool_add_drawer_batch,
+    },
     "mempalace_diary_write": {
         "description": "Write to your personal agent diary in AAAK format. Your observations, thoughts, what you worked on, what matters. Each agent has their own diary with full history. Write in AAAK for compression — e.g. 'SESSION:2026-04-04|built.palace.graph+diary.tools|ALC.req:agent.diaries.in.aaak|★★★'. Use entity codes from the AAAK spec.",
         "input_schema": {
@@ -759,8 +851,43 @@ def handle_request(request):
     }
 
 
+def _forward_to_remote(request: dict, host: str, port: int, timeout: float = 30.0) -> dict:
+    """Forward a JSON-RPC request to a remote MCP server over TCP."""
+    payload = json.dumps(request) + "\n"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        sock.sendall(payload.encode("utf-8"))
+        buf = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\n" in buf:
+                break
+        return json.loads(buf.decode("utf-8").strip())
+    finally:
+        sock.close()
+
+
 def main():
-    logger.info("MemPalace MCP Server starting...")
+    """Entry point — stdio MCP server, optionally proxying to a remote palace.
+
+    When MEMPALACE_REMOTE is set (env var or ~/.mempalace/config.json),
+    protocol handshake stays local but tools/call requests are forwarded
+    to the remote palace over TCP.
+    """
+    remote = os.environ.get("MEMPALACE_REMOTE") or _config.remote
+
+    if remote:
+        r_host, r_port_str = remote.rsplit(":", 1)
+        r_port = int(r_port_str)
+        logger.info(f"MemPalace MCP Server starting (proxy → {remote})...")
+    else:
+        logger.info("MemPalace MCP Server starting (local)...")
+
     while True:
         try:
             line = sys.stdin.readline()
@@ -770,7 +897,24 @@ def main():
             if not line:
                 continue
             request = json.loads(line)
-            response = handle_request(request)
+
+            if remote:
+                method = request.get("method", "")
+                if method in ("initialize", "notifications/initialized", "tools/list"):
+                    response = handle_request(request)
+                else:
+                    try:
+                        response = _forward_to_remote(request, r_host, r_port)
+                    except Exception as e:
+                        logger.error(f"Remote proxy error: {e}")
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request.get("id"),
+                            "error": {"code": -32000, "message": f"Remote palace unreachable: {e}"},
+                        }
+            else:
+                response = handle_request(request)
+
             if response is not None:
                 sys.stdout.write(json.dumps(response) + "\n")
                 sys.stdout.flush()
