@@ -257,4 +257,6 @@ def test_file_already_mined_check_mtime():
         )
         assert file_already_mined(col, "/fake/no_mtime.txt", check_mtime=True) is False
     finally:
-        shutil.rmtree(tmpdir)
+        # Release ChromaDB file handles before cleanup (required on Windows)
+        del col, client
+        shutil.rmtree(tmpdir, ignore_errors=True)
