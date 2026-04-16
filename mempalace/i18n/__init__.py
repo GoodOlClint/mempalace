@@ -91,6 +91,90 @@ def _load_entity_section(lang: str) -> dict:
     return data.get("entity", {}) or {}
 
 
+def _script_boundary(chars: str) -> str:
+    """Build a lookaround-based word boundary expression.
+
+    Python's built-in ``\\b`` is a transition between ``\\w`` and non-``\\w``.
+    ``\\w`` covers Unicode Letter and Number categories but NOT Marks (category
+    Mc/Mn), so for scripts whose words contain combining vowel signs — Devanagari
+    (ा ी ु), Arabic (ـَ ـِ ـُ), Hebrew (ִ ֵ), Thai, Tamil, Burmese, Khmer — the
+    default ``\\b`` drops the trailing mark, truncating names like ``अनीता`` to
+    ``अनीत`` and failing to match ``\\bकहा\\b`` because the trailing matra is
+    not a word character.
+
+    Locales with such scripts declare ``boundary_chars`` in their entity section
+    (e.g. ``"\\\\w\\\\u0900-\\\\u097F"`` for Hindi). This function returns a
+    regex fragment equivalent to ``\\b`` but where the "word" side is defined
+    as any char matching ``[chars]`` rather than just ``\\w``.
+    """
+    return (
+        rf"(?:(?<=[{chars}])(?=[^{chars}])"
+        rf"|(?<=[^{chars}])(?=[{chars}])"
+        rf"|^(?=[{chars}])"
+        rf"|(?<=[{chars}])$)"
+    )
+
+
+def _expand_b(pattern: str, boundary_chars: str) -> str:
+    """Replace every literal ``\\b`` in ``pattern`` with a script-aware boundary.
+
+    ``boundary_chars`` is the inside-word character class (without brackets).
+    If it's falsy, the pattern is returned unchanged so ``\\b`` keeps its
+    default Python ``re`` semantics.
+    """
+    if not boundary_chars:
+        return pattern
+    return pattern.replace(r"\b", _script_boundary(boundary_chars))
+
+
+def _wrap_candidate(raw_pat: str, boundary_chars: str) -> str:
+    """Wrap a candidate/multi-word extraction pattern with a capture group
+    and word boundaries appropriate for its locale.
+
+    Default: ``\\b(raw)\\b``. With ``boundary_chars``: the script-aware
+    equivalent, so names ending in combining marks are matched in full.
+    """
+    if boundary_chars:
+        b = _script_boundary(boundary_chars)
+        return f"{b}({raw_pat}){b}"
+    return rf"\b({raw_pat})\b"
+
+
+def _collect_entity_section(section: dict, acc: dict) -> None:
+    """Merge one language's entity section into the running accumulator.
+
+    Handles boundary expansion in-place so the caller merges already-expanded
+    strings: `candidate_patterns` and `multi_word_patterns` are pre-wrapped
+    with the locale's boundary (capture group included, ready to compile);
+    every ``\\b`` inside person/pronoun/dialogue/project/direct patterns is
+    replaced with the locale's script-aware boundary.
+    """
+    boundary_chars = section.get("boundary_chars")
+    if section.get("candidate_pattern"):
+        acc["candidate_patterns"].append(
+            _wrap_candidate(section["candidate_pattern"], boundary_chars)
+        )
+    if section.get("multi_word_pattern"):
+        acc["multi_word_patterns"].append(
+            _wrap_candidate(section["multi_word_pattern"], boundary_chars)
+        )
+    if section.get("direct_address_pattern"):
+        acc["direct_address"].append(_expand_b(section["direct_address_pattern"], boundary_chars))
+    acc["person_verbs"].extend(
+        _expand_b(p, boundary_chars) for p in section.get("person_verb_patterns", [])
+    )
+    acc["pronouns"].extend(
+        _expand_b(p, boundary_chars) for p in section.get("pronoun_patterns", [])
+    )
+    acc["dialogue"].extend(
+        _expand_b(p, boundary_chars) for p in section.get("dialogue_patterns", [])
+    )
+    acc["project_verbs"].extend(
+        _expand_b(p, boundary_chars) for p in section.get("project_verb_patterns", [])
+    )
+    acc["stopwords"].update(w.lower() for w in section.get("stopwords", []))
+
+
 def get_entity_patterns(languages=("en",)) -> dict:
     """Return merged entity detection patterns for the requested languages.
 
@@ -105,10 +189,16 @@ def get_entity_patterns(languages=("en",)) -> dict:
       - ``stopwords`` is the set union across all languages, returned as a
         sorted list.
       - ``candidate_patterns`` and ``multi_word_patterns`` are returned as
-        lists (one per language) since they use different character classes;
-        callers run each pattern independently and union the matches.
+        **fully-wrapped regex strings** (boundary + capture group applied);
+        the consumer compiles them directly with no further wrapping.
       - ``direct_address_pattern`` is returned as a list of per-language
         alternation patterns (not concatenated — each is applied separately).
+
+    Locales with combining-mark scripts can declare ``boundary_chars`` in
+    their entity section (e.g. ``"\\\\w\\\\u0900-\\\\u097F"`` for Hindi);
+    every ``\\b`` inside that locale's patterns — plus the candidate/multi-
+    word wrapping — is expanded to a script-aware lookaround boundary that
+    treats the declared characters as "inside-word".
 
     If ``languages`` is empty or no requested language declares entity data,
     English is used as a fallback so callers always get a working config.
@@ -119,14 +209,16 @@ def get_entity_patterns(languages=("en",)) -> dict:
     if key in _entity_cache:
         return _entity_cache[key]
 
-    candidate_patterns: list[str] = []
-    multi_word_patterns: list[str] = []
-    person_verbs: list[str] = []
-    pronouns: list[str] = []
-    dialogue: list[str] = []
-    direct_address: list[str] = []
-    project_verbs: list[str] = []
-    stopwords: set = set()
+    acc = {
+        "candidate_patterns": [],
+        "multi_word_patterns": [],
+        "person_verbs": [],
+        "pronouns": [],
+        "dialogue": [],
+        "direct_address": [],
+        "project_verbs": [],
+        "stopwords": set(),
+    }
 
     found_any = False
     for lang in languages:
@@ -134,42 +226,21 @@ def get_entity_patterns(languages=("en",)) -> dict:
         if not section:
             continue
         found_any = True
-        if section.get("candidate_pattern"):
-            candidate_patterns.append(section["candidate_pattern"])
-        if section.get("multi_word_pattern"):
-            multi_word_patterns.append(section["multi_word_pattern"])
-        if section.get("direct_address_pattern"):
-            direct_address.append(section["direct_address_pattern"])
-        person_verbs.extend(section.get("person_verb_patterns", []))
-        pronouns.extend(section.get("pronoun_patterns", []))
-        dialogue.extend(section.get("dialogue_patterns", []))
-        project_verbs.extend(section.get("project_verb_patterns", []))
-        stopwords.update(w.lower() for w in section.get("stopwords", []))
+        _collect_entity_section(section, acc)
 
     if not found_any:
-        # Fallback: load English directly
-        section = _load_entity_section("en")
-        if section.get("candidate_pattern"):
-            candidate_patterns.append(section["candidate_pattern"])
-        if section.get("multi_word_pattern"):
-            multi_word_patterns.append(section["multi_word_pattern"])
-        if section.get("direct_address_pattern"):
-            direct_address.append(section["direct_address_pattern"])
-        person_verbs.extend(section.get("person_verb_patterns", []))
-        pronouns.extend(section.get("pronoun_patterns", []))
-        dialogue.extend(section.get("dialogue_patterns", []))
-        project_verbs.extend(section.get("project_verb_patterns", []))
-        stopwords.update(w.lower() for w in section.get("stopwords", []))
+        # Fallback: load English directly so callers always get a working config.
+        _collect_entity_section(_load_entity_section("en"), acc)
 
     merged = {
-        "candidate_patterns": candidate_patterns,
-        "multi_word_patterns": multi_word_patterns,
-        "person_verb_patterns": _dedupe(person_verbs),
-        "pronoun_patterns": _dedupe(pronouns),
-        "dialogue_patterns": _dedupe(dialogue),
-        "direct_address_patterns": direct_address,
-        "project_verb_patterns": _dedupe(project_verbs),
-        "stopwords": sorted(stopwords),
+        "candidate_patterns": acc["candidate_patterns"],
+        "multi_word_patterns": acc["multi_word_patterns"],
+        "person_verb_patterns": _dedupe(acc["person_verbs"]),
+        "pronoun_patterns": _dedupe(acc["pronouns"]),
+        "dialogue_patterns": _dedupe(acc["dialogue"]),
+        "direct_address_patterns": acc["direct_address"],
+        "project_verb_patterns": _dedupe(acc["project_verbs"]),
+        "stopwords": sorted(acc["stopwords"]),
     }
     _entity_cache[key] = merged
     return merged

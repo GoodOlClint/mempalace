@@ -589,3 +589,75 @@ def test_config_set_entity_languages_empty_falls_back_to_english(tmp_path, monke
     result = cfg.set_entity_languages([])
     assert result == ["en"]
     assert cfg.entity_languages == ["en"]
+
+
+# ── boundary_chars for combining-mark scripts ─────────────────────────
+
+# Devanagari vowel signs (matras) are Unicode Mc — not matched by \w.
+# Without boundary_chars, \b truncates names like अनीता → अनीत and
+# person_verb patterns never fire.  With boundary_chars, the i18n loader
+# replaces \b with a script-aware lookaround, fixing both.
+
+_DEVANAGARI_ENTITY = {
+    "boundary_chars": "\\w\\u0900-\\u097F",
+    "candidate_pattern": "[\\u0900-\\u097F]{2,20}",
+    "multi_word_pattern": "[\\u0900-\\u097F]+(?:\\s+[\\u0900-\\u097F]+)+",
+    "person_verb_patterns": [
+        "\\b{name}\\s+ने\\s+कहा\\b",
+        "\\b{name}\\s+हँसा\\b",
+    ],
+    "pronoun_patterns": ["\\bवह\\b", "\\bउसने\\b"],
+    "dialogue_patterns": ["^{name}:\\s"],
+    "direct_address_pattern": "\\bनमस्ते\\s+{name}\\b",
+    "project_verb_patterns": [],
+    "stopwords": ["यह", "वह", "और", "का", "के", "की"],
+}
+
+
+def test_devanagari_candidate_extraction_with_boundary_chars():
+    """Names ending in matras are extracted in full with boundary_chars."""
+    with _temp_locale("zz-test-hindi", _DEVANAGARI_ENTITY):
+        text = "अनीता ने कहा। अनीता हँसा। अनीता सोचा। अनीता बोला।"
+        result = extract_candidates(text, languages=("en", "zz-test-hindi"))
+        assert "अनीता" in result, f"expected अनीता in {result}"
+        assert result["अनीता"] >= 3
+
+
+def test_devanagari_candidate_without_boundary_chars_truncates():
+    """Without boundary_chars, a matra-ending name gets truncated."""
+    locale_no_boundary = dict(_DEVANAGARI_ENTITY)
+    del locale_no_boundary["boundary_chars"]
+    with _temp_locale("zz-test-hindi-no-b", locale_no_boundary):
+        text = "अनीता ने कहा। अनीता हँसा। अनीता सोचा।"
+        result = extract_candidates(text, languages=("en", "zz-test-hindi-no-b"))
+        # Without boundary_chars, \b splits on the matra — full name won't appear
+        assert "अनीता" not in result
+
+
+def test_devanagari_person_verb_fires_with_boundary_chars():
+    """Hindi person-verb patterns fire when boundary_chars extends \\b."""
+    with _temp_locale("zz-test-hindi", _DEVANAGARI_ENTITY):
+        text = "राज ने कहा कुछ। राज हँसा।"
+        lines = text.splitlines()
+        scores = score_entity("राज", text, lines, languages=("en", "zz-test-hindi"))
+        assert scores["person_score"] > 0, f"expected person_score > 0, got {scores}"
+        assert any("action" in s for s in scores["person_signals"])
+
+
+def test_devanagari_person_verb_silent_without_boundary_chars():
+    """Without boundary_chars, Hindi person verbs don't fire."""
+    locale_no_boundary = dict(_DEVANAGARI_ENTITY)
+    del locale_no_boundary["boundary_chars"]
+    with _temp_locale("zz-test-hindi-no-b", locale_no_boundary):
+        text = "राज ने कहा कुछ। राज हँसा।"
+        lines = text.splitlines()
+        scores = score_entity("राज", text, lines, languages=("en", "zz-test-hindi-no-b"))
+        assert scores["person_score"] == 0
+
+
+def test_boundary_chars_english_regression():
+    """English patterns (no boundary_chars) still work identically."""
+    text = "Riley said hello. Riley laughed. Riley smiled. Riley waved."
+    result = extract_candidates(text, languages=("en",))
+    assert "Riley" in result
+    assert result["Riley"] >= 3

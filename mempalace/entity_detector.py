@@ -134,10 +134,10 @@ def extract_candidates(text: str, languages=("en",)) -> dict:
 
     counts: defaultdict = defaultdict(int)
 
-    # Single-word candidates — one pattern per language
-    for raw_pat in patterns["candidate_patterns"]:
+    # Single-word candidates — one pre-wrapped pattern per language
+    for wrapped_pat in patterns["candidate_patterns"]:
         try:
-            rx = re.compile(rf"\b({raw_pat})\b")
+            rx = re.compile(wrapped_pat)
         except re.error:
             continue
         for word in rx.findall(text):
@@ -147,10 +147,10 @@ def extract_candidates(text: str, languages=("en",)) -> dict:
                 continue
             counts[word] += 1
 
-    # Multi-word candidates — one pattern per language
-    for raw_pat in patterns["multi_word_patterns"]:
+    # Multi-word candidates — one pre-wrapped pattern per language
+    for wrapped_pat in patterns["multi_word_patterns"]:
         try:
-            rx = re.compile(rf"\b({raw_pat})\b")
+            rx = re.compile(wrapped_pat)
         except re.error:
             continue
         for phrase in rx.findall(text):
