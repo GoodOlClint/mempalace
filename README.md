@@ -682,6 +682,7 @@ pip install mempalace
 
 ## Contributing
 
+<!-- TODO: add code of conduct -->
 PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
 ## License
