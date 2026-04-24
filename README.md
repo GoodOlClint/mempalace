@@ -4,6 +4,8 @@
 
 # MemPalace
 
+<!-- TODO: add contributing guidelines -->
+
 ### The highest-scoring AI memory system ever benchmarked. And it's free.
 
 <br>
